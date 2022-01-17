@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/sessions"
@@ -18,8 +19,25 @@ import (
 
 var ttfb int = 0
 
-func keyFor(what string, id string) string {
-	return fmt.Sprintf("hitbox:%s:%s", what, id)
+func hostname() string {
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		hostname = "HOSTNAMEless"
+	}
+
+	return hostname
+}
+
+func keyFor(parts ...string) string {
+	tokens := append([]string{"hitbox"}, parts...)
+
+	var sb strings.Builder
+	for _, token := range tokens {
+		sb.WriteString(token)
+		sb.WriteString(":")
+	}
+
+	return sb.String()
 }
 func page(c *gin.Context, r *redis.Client, current int) {
 	start := time.Now()
@@ -41,13 +59,14 @@ func page(c *gin.Context, r *redis.Client, current int) {
 	ip := c.ClientIP()
 
 	go func() {
-		r.Incr(c, keyFor("bg", "inflight"))
+		hostname := hostname()
+		r.Incr(c, keyFor("bg", "inflight", hostname))
 
-		r.Incr(c, keyFor("ip", ip))
-		r.Incr(c, keyFor("session", sessionId))
-		r.Incr(c, keyFor("hit", hit))
+		r.PFAdd(c, keyFor("ips"), ip)
+		r.PFAdd(c, keyFor("sessions"), sessionId)
+		r.PFAdd(c, keyFor("hits"), hit)
 
-		r.Decr(c, keyFor("bg", "inflight"))
+		r.Decr(c, keyFor("bg", "inflight", hostname))
 	}()
 
 	overhead := time.Since(start)
@@ -75,10 +94,13 @@ func main() {
 	if !ok {
 		redisURL = "redis://localhost:6379/0"
 	}
+	fmt.Println("Using redis from: " + redisURL)
+
 	redisOpts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		panic(err)
 	}
+
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     redisOpts.Addr,
 		Password: redisOpts.Password,
@@ -105,15 +127,25 @@ func main() {
 	})
 
 	r.GET("/metrics", func(c *gin.Context) {
-		ips, _ := redisClient.Keys(c, keyFor("ip", "*")).Result()
-		sessions, _ := redisClient.Keys(c, keyFor("session", "*")).Result()
-		hits, _ := redisClient.Keys(c, keyFor("hit", "*")).Result()
-		bgInflight, _ := redisClient.Get(c, keyFor("bg", "inflight")).Result()
+		hostname := hostname()
+
+		ips, _ := redisClient.PFCount(c, keyFor("ips")).Result()
+		sessions, _ := redisClient.PFCount(c, keyFor("sessions")).Result()
+		hits, _ := redisClient.PFCount(c, keyFor("hits")).Result()
+
+		var bgInflight int
+		bgInflightString, _ := redisClient.Get(c, keyFor("bg", "inflight", hostname)).Result()
+		if bgInflightString == "" {
+			bgInflight = -1
+		} else {
+			bgInflight, _ = strconv.Atoi(bgInflightString)
+		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"ips":         len(ips),
-			"sessions":    len(sessions),
-			"hits":        len(hits),
+			"hostname":    hostname,
+			"ips":         ips,
+			"sessions":    sessions,
+			"hits":        hits,
 			"bg:inflight": bgInflight,
 		})
 	})
@@ -125,6 +157,11 @@ func main() {
 		} else {
 			c.String(http.StatusOK, "ok")
 		}
+	})
+
+	r.GET("/resetz", func(c *gin.Context) {
+		redisClient.FlushDB(c)
+		c.String(http.StatusOK, "flushed")
 	})
 
 	r.GET("/set/:key/:value", func(c *gin.Context) {
