@@ -1,0 +1,16 @@
+
+<h1>{{ .current }}</h1>
+
+<h2>
+  <a href="/page/{{ .next }}">/page/{{ .next }}</a>
+</h2>
+
+<hr>
+<pre>
+  ttfb: {{ .ttfb }}ms
+  ip: {{ .ip }}
+  session: {{ .session }}
+  hit: {{ .hit }}
+  overhead: {{ .overhead }}
+  filler: {{ .filler }}
+</pre>
