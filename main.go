@@ -60,7 +60,12 @@ func page(c *gin.Context, r *redis.Client, current int) {
 
 	go func() {
 		hostname := hostname()
+
 		r.Incr(c, keyFor("bg", "inflight", hostname))
+
+		r.ZAdd(c, keyFor("z", "sessions"), &redis.Z{Score: float64(time.Now().Unix()), Member: sessionId})
+		r.ZAdd(c, keyFor("z", "ips"), &redis.Z{Score: float64(time.Now().Unix()), Member: ip})
+		r.ZAdd(c, keyFor("z", "hits"), &redis.Z{Score: float64(time.Now().Unix()), Member: hit})
 
 		r.PFAdd(c, keyFor("ips"), ip)
 		r.PFAdd(c, keyFor("sessions"), sessionId)
@@ -89,6 +94,9 @@ func page(c *gin.Context, r *redis.Client, current int) {
 		"filler":   filler,
 	})
 }
+
+var keepSeconds = int64(60)
+
 func main() {
 	redisURL, ok := os.LookupEnv("REDIS_URL")
 	if !ok {
@@ -128,10 +136,15 @@ func main() {
 
 	r.GET("/metrics", func(c *gin.Context) {
 		hostname := hostname()
+		zRecent := strconv.FormatInt(time.Now().Unix()-keepSeconds, 10)
 
 		ips, _ := redisClient.PFCount(c, keyFor("ips")).Result()
 		sessions, _ := redisClient.PFCount(c, keyFor("sessions")).Result()
 		hits, _ := redisClient.PFCount(c, keyFor("hits")).Result()
+
+		zIps, _ := redisClient.ZCount(c, keyFor("z", "ips"), zRecent, "+inf").Result()
+		zSessions, _ := redisClient.ZCount(c, keyFor("z", "sessions"), zRecent, "+inf").Result()
+		zHits, _ := redisClient.ZCount(c, keyFor("z", "hits"), zRecent, "+inf").Result()
 
 		var bgInflight int
 		bgInflightString, _ := redisClient.Get(c, keyFor("bg", "inflight", hostname)).Result()
@@ -147,6 +160,9 @@ func main() {
 			"sessions":    sessions,
 			"hits":        hits,
 			"bg:inflight": bgInflight,
+			"z:ips":       zIps,
+			"z:sessions":  zSessions,
+			"z:hits":      zHits,
 		})
 	})
 
@@ -197,6 +213,12 @@ func main() {
 			} else {
 				ttfb, _ = strconv.Atoi(ttfbString)
 			}
+
+			recent := strconv.FormatInt(time.Now().Unix()-keepSeconds, 10)
+			for _, key := range []string{"ips", "sessions", "hits"} {
+				redisClient.ZRemRangeByScore(context.TODO(), keyFor("z", key), "-inf", recent)
+			}
+
 			time.Sleep(1 * time.Second)
 		}
 	}()
