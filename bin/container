@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+_echoerr() {
+  2>&1 echo "$@"
+}
+
+_err() {
+  _echoerr $@
+  exit 1
+}
+
+case $1 in
+  recreate)
+    while true; do
+      docker-compose up --build --force-recreate --timeout 0 hitbox
+      sleep 1
+    done
+  ;;
+  shell)
+    while true; do
+      docker-compose exec hitbox bash
+      sleep 1
+    done
+  ;;
+  build)
+    exec docker-compose build
+  ;;
+  push)
+    exec docker-compose push
+  ;;
+  buildpush)
+    $0 build
+    $0 push
+  ;;
+  deploy)
+    $0 buildpush
+    kubectl apply -f k8s
+    kubectl label -f k8s/manifest.yml --overwrite app=hitbox
+  ;;
+  *)
+    _err "?"
+  ;;
+esac

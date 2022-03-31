@@ -1,0 +1,197 @@
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: hitbox-redis
+value: 2000
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: hitbox-app
+value: 1000
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hitbox
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: hitbox
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      priorityClassName: hitbox-redis
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
+      containers:
+        - name: redis
+          image: redis:alpine
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hitbox
+  namespace: hitbox
+spec:
+  selector:
+    matchLabels:
+      app: hitbox
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: "67%"
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: hitbox
+    spec:
+      priorityClassName: hitbox
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: In
+                    values:
+                      - "hitbox"
+              topologyKey: "kubernetes.io/hostname"
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
+      containers:
+        - name: hitbox
+          image: mattipaksula/hitbox
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "1"
+              memory: "128Mi"
+            limits:
+              cpu: "8"
+              memory: "128Mi"
+          env:
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 5
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: hitbox
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: autoscaling/v2beta1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hitbox
+  namespace: hitbox
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: hitbox
+    apiVersion: apps/v1
+  minReplicas: 3
+  maxReplicas: 9
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        targetAverageUtilization: 50
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hitbox
+  namespace: hitbox
+spec:
+  type: ClusterIP
+  selector:
+    app: hitbox
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hitbox
+  namespace: hitbox
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "k8s-ingressn-ingressn-adf1e8f44d-dc5a664f0ebd0e34.elb.eu-west-1.amazonaws.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hitbox
+                port:
+                  number: 80

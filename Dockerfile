@@ -1,4 +1,4 @@
-FROM golang:1.17-alpine
+FROM --platform=amd64 golang:1.17-alpine
 
 RUN apk add --no-cache \
   bash redis
